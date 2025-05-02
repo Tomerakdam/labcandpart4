@@ -8,6 +8,7 @@
 #include <string.h>       
 #include <fcntl.h> 
 #include <ctype.h>
+
 #define HISTLEN 20
 #define TERMINATED -1
 #define RUNNING 1
@@ -20,7 +21,36 @@ typedef struct process {
     struct process* next;    
 } process;
 
+cmdLine* cloneCmdLine(const cmdLine* original) {
+    cmdLine* copy = (cmdLine*)malloc(sizeof(cmdLine));
+    if (!copy) {
+        perror("malloc");
+        exit(EXIT_FAILURE);
+    }
 
+    // Temporarily use a local array to fill in arguments
+    char* tempArgs[MAX_ARGUMENTS];
+    for (int i = 0; i < original->argCount; i++) {
+        tempArgs[i] = strdup(original->arguments[i]);
+        if (!tempArgs[i]) {
+            perror("strdup");
+            exit(EXIT_FAILURE);
+        }
+    }
+    // Copy all fields
+    memcpy(copy, original, sizeof(cmdLine));
+
+    // Overwrite the const-qualified array via memcpy (legal workaround)
+    memcpy((void*)copy->arguments, tempArgs, sizeof(tempArgs));
+
+    // Copy the next cmdLine recursively
+    if (original->next != NULL)
+        copy->next = cloneCmdLine(original->next);
+    else
+        copy->next = NULL;
+
+    return copy;
+}
 
 void addProcess(process** process_list, cmdLine* cmd, pid_t pid) {
     process* new_process = (process*)malloc(sizeof(process));
@@ -29,7 +59,7 @@ void addProcess(process** process_list, cmdLine* cmd, pid_t pid) {
         exit(EXIT_FAILURE);
     }
     
-    new_process->cmd = cmd;
+    new_process->cmd = cloneCmdLine(cmd);;
     new_process->pid = pid;
     new_process->status = RUNNING;  //  default
     new_process->next = NULL;
@@ -96,7 +126,7 @@ void freeProcessList(process* process_list) {
     while (current != NULL) {
         process* temp = current;
         current = current->next;
-        free(temp->cmd);
+        freeCmdLines(temp->cmd);;
         free(temp);
     }
 }
@@ -366,7 +396,7 @@ void execute_pipeline(cmdLine *first_cmd, cmdLine *second_cmd,process** process_
         execute(pCmdLine,  process_list);    // no pipe, just execute normally   
     }
 }
-//PART4
+
 static char* history[HISTLEN]; //init the history array
 static int history_start=0; //place of the latest hist command
 static int history_count=0; //command count
@@ -376,12 +406,12 @@ void add_history(const char* cmd){ //adding history to the list
         perror("strdup failed");
         return;
     }
-    if (history_count<HISTLEN){
+    if (history_count<HISTLEN){ //just adding in a cyclic pattern
         history[(history_start+history_count)%HISTLEN]=copy;
         history_count++;
     }
-    else{
-        free(history[history_start]);
+     else{
+        free(history[history_start]);//freee oldest and entering the newest
         history[history_start]=copy;
         history_start++;
         history_start=history_start%HISTLEN;
@@ -394,6 +424,7 @@ void printHistory(){ // traverse over history array and print each command
 }
 char *get_history_entry(int n){ // PRINT CMD IN N PLACE
     if(n<1 || n>history_count){
+        perror("ignore this command line");
         return NULL;
     }
     return history[(history_start+n-1)%HISTLEN];
@@ -403,6 +434,7 @@ void freeHistory(){
         free (history[(history_start+i)%HISTLEN]);
     }
 }
+
 int main (int argc, char **argv){
     char inputBuffer[2048];
     char cwd[PATH_MAX];
@@ -411,26 +443,30 @@ int main (int argc, char **argv){
 
     while (1){
         updateProcessList(&process_list);
+
         if (getcwd(cwd, sizeof(cwd)) != NULL) {
             printf("%s> ", cwd);
-        } 
-        else {
+        } else {
             perror("getcwd error");
             exit(1);
         }
         for (int i = 1; i < argc; i++) {
             if (strcmp(argv[i], "-d") == 0) {
-                debug = 1;
-                break;
-            }
+            debug = 1;
+            break;
         }
+        }
+
         // read user input
         if (fgets(inputBuffer, sizeof(inputBuffer), stdin) == NULL) {
             break; // EOF or error
         }
-
-        inputBuffer[strcspn(inputBuffer,"\n")]=0;// cut the \n
+            
+         if (inputBuffer[strlen(inputBuffer) - 1] == '\n') {
+            inputBuffer[strlen(inputBuffer) - 1] = '\0';
+        }
         if (strcmp(inputBuffer,"hist")==0){
+            add_history("hist");
             printHistory();
             continue;
         }
@@ -440,6 +476,7 @@ int main (int argc, char **argv){
                 continue;
             }
             char* lastCommand=get_history_entry(history_count);
+            add_history(lastCommand);
             printf("%s\n",lastCommand);
             strcpy(inputBuffer,lastCommand);
         }
@@ -450,6 +487,7 @@ int main (int argc, char **argv){
                 perror("no command");
                 continue;
             }
+            add_history(selectedCommand);
             printf("%s\n",selectedCommand);
             strcpy(inputBuffer,selectedCommand);
         }
@@ -458,16 +496,19 @@ int main (int argc, char **argv){
         }
         // parse input line
         line = parseCmdLines(inputBuffer);
-        if (!line){
-            continue;
-        }
+        
         if (strcmp(line->arguments[0], "quit") == 0) {
             freeCmdLines(line);
+            line=NULL;
             break;
         }
         executeCommandLine(line, &process_list);
+        freeCmdLines(line);
+        line=NULL;
+
 
     }
+    freeHistory();
      freeProcessList(process_list);
        
 
